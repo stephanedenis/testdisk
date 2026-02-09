@@ -61,6 +61,7 @@
 #include "photorec.h"
 #include "exfatp.h"
 #include "ext2p.h"
+#include "btrfs.h"
 #include "btrfsp.h"
 #include "fatp.h"
 #include "ntfsp.h"
@@ -512,6 +513,14 @@ partition_t *new_whole_disk(const disk_t *disk_car)
   fake_partition->part_offset=0;
   fake_partition->part_size=disk_car->disk_size;
   strncpy(fake_partition->fsname,"Whole disk",sizeof(fake_partition->fsname)-1);
+  /* Try to autodetect filesystem type on the whole disk/volume.
+   * This is important for LVM logical volumes that contain a
+   * filesystem directly (e.g. btrfs on /dev/mapper/xxx). */
+  check_btrfs((disk_t *)disk_car, fake_partition);
+  if(fake_partition->upart_type == UP_UNK)
+    log_info("new_whole_disk: no filesystem autodetected\n");
+  else
+    log_info("new_whole_disk: detected filesystem type %u\n", fake_partition->upart_type);
   return fake_partition;
 }
 

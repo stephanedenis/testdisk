@@ -83,6 +83,12 @@ int ask_mode_ext2(const disk_t *disk_car, const partition_t *partition, unsigned
     {0,NULL,NULL}
   };
 #endif
+  static const struct MenuItem menuBTRFS[]=
+  {
+    {'F',"Free", "Scan for file from btrfs unallocated space only"},
+    {'W',"Whole","Extract files from whole partition"},
+    {0,NULL,NULL}
+  };
   const char *options="EO";
   WINDOW *window;
   unsigned int menu;
