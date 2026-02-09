@@ -40,6 +40,7 @@ int ask_mode_ext2(const disk_t *disk_car, const partition_t *partition, unsigned
   static const struct MenuItem menuMode[]=
     {
       {'E',"ext2/ext3","ext2/ext3/ext4 filesystem"},
+      {'B',"btrfs","btrfs filesystem"},
       {'O',"Other","FAT/NTFS/HFS+/ReiserFS/..."},
       {0,NULL,NULL}
     };
@@ -89,7 +90,7 @@ int ask_mode_ext2(const disk_t *disk_car, const partition_t *partition, unsigned
     {'W',"Whole","Extract files from whole partition"},
     {0,NULL,NULL}
   };
-  const char *options="EO";
+  const char *options="EBO";
   WINDOW *window;
   unsigned int menu;
   int command;
@@ -97,8 +98,10 @@ int ask_mode_ext2(const disk_t *disk_car, const partition_t *partition, unsigned
       partition->upart_type==UP_EXT3 ||
       partition->upart_type==UP_EXT4)
     menu=0;
-  else
+  else if(partition->upart_type==UP_BTRFS)
     menu=1;
+  else
+    menu=2;
   window=newwin(LINES, COLS, 0, 0);	/* full screen */
   aff_copy(window);
   wmove(window,4,0);
@@ -144,6 +147,12 @@ int ask_mode_ext2(const disk_t *disk_car, const partition_t *partition, unsigned
       command = wmenuSelect_ext(window, 23, 8, 0, menuEXT2, 11,
 	  options, MENU_VERT | MENU_VERT_WARN | MENU_BUTTON, &menu,NULL);
 #endif
+    else if(partition->upart_type==UP_BTRFS)
+      command = wmenuSelect_ext(window, 23, 8, 0, menuBTRFS, 11,
+          options, MENU_VERT | MENU_VERT_WARN | MENU_BUTTON, &menu,NULL);
+    else if(partition->upart_type==UP_BTRFS)
+      command = wmenuSelect_ext(window, 23, 8, 0, menuBTRFS, 11,
+          options, MENU_VERT | MENU_VERT_WARN | MENU_BUTTON, &menu,NULL);
     else
       command='W';
     *carve_free_space_only=(command=='F' || command=='f')?1:0;
