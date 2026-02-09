@@ -61,21 +61,21 @@
 #define BTRFS_BLOCK_GROUP_SYSTEM   (1ULL << 1)
 #define BTRFS_BLOCK_GROUP_METADATA (1ULL << 2)
 
-/* On-disk key */
+/* On-disk key (packed: 8 + 1 + 8 = 17 bytes) */
 struct btrfs_disk_key {
   uint64_t objectid;
   uint8_t  type;
   uint64_t offset;
 } __attribute__ ((gcc_struct, __packed__));
 
-/* Chunk item stripe */
+/* Chunk item stripe (packed: 8 + 8 + 16 = 32 bytes) */
 struct btrfs_stripe {
   uint64_t devid;
   uint64_t offset;      /* physical offset on device */
   uint8_t  dev_uuid[BTRFS_UUID_SIZE];
 } __attribute__ ((gcc_struct, __packed__));
 
-/* Chunk item */
+/* Chunk item (packed: 48 bytes + first stripe 32 = 80 total) */
 struct btrfs_chunk {
   uint64_t length;      /* size of this chunk in bytes */
   uint64_t owner;       /* objectid of the root referencing this chunk */
@@ -90,7 +90,7 @@ struct btrfs_chunk {
   /* additional stripes follow */
 } __attribute__ ((gcc_struct, __packed__));
 
-/* B-tree node header */
+/* B-tree node header (packed: 101 bytes) */
 struct btrfs_header {
   uint8_t  csum[BTRFS_CSUM_SIZE];
   uint8_t  fsid[BTRFS_FSID_SIZE];
@@ -103,52 +103,42 @@ struct btrfs_header {
   uint8_t  level;
 } __attribute__ ((gcc_struct, __packed__));
 
-/* Leaf item (in a leaf node, level==0) */
+/* Leaf item (in a leaf node, level==0): key(17) + offset(4) + size(4) = 25 bytes */
 struct btrfs_item {
   struct btrfs_disk_key key;
-  uint32_t offset;  /* offset from end of header to the data */
+  uint32_t offset;  /* offset relative to the end of the header area */
   uint32_t size;    /* size of the data */
 } __attribute__ ((gcc_struct, __packed__));
 
-/* Internal node key pointer (in internal nodes, level>0) */
+/* Internal node key pointer (in internal nodes, level>0): key(17) + blockptr(8) + gen(8) = 33 bytes */
 struct btrfs_key_ptr {
   struct btrfs_disk_key key;
-  uint64_t blockptr;
+  uint64_t blockptr;    /* logical address of child node */
   uint64_t generation;
 } __attribute__ ((gcc_struct, __packed__));
 
-/* Sys chunk array entry: key + chunk */
-struct btrfs_sys_chunk {
-  struct btrfs_disk_key key;
-  struct btrfs_chunk chunk;
-} __attribute__ ((gcc_struct, __packed__));
-
-/* Block group item */
-struct btrfs_block_group_item {
-  uint64_t used;
-  uint64_t chunk_objectid;
-  uint64_t flags;
-} __attribute__ ((gcc_struct, __packed__));
-
 /*
- * Remove allocated chunk ranges from PhotoRec search space.
+ * Strategy for excluding allocated btrfs space:
  *
- * Strategy:
- * 1. Read the btrfs superblock to get sectorsize and sys_chunk_array
- * 2. Parse sys_chunk_array to get system chunk physical locations
- * 3. Read the chunk tree root (from superblock->chunk_root) 
- * 4. Walk the chunk tree leaf nodes to find all CHUNK_ITEM entries
+ * 1. Read the btrfs superblock to get sectorsize, nodesize, and sys_chunk_array
+ * 2. Parse sys_chunk_array to get system chunk logical->physical mappings
+ *    (these bootstrap the ability to read the chunk tree)
+ * 3. Use logical->physical translation to read the chunk tree root
+ * 4. Walk the chunk tree B-tree to discover ALL chunk mappings
  * 5. For each chunk: its stripes tell us the physical byte ranges on disk
  * 6. Call del_search_space() for each physical range that is allocated
  *
- * This excludes all currently-allocated data, metadata, and system chunks,
- * leaving only the genuinely free space to be scanned for deleted files.
+ * CRITICAL: btrfs uses separate logical and physical address spaces.
+ * The superblock's chunk_root and all B-tree pointers are LOGICAL addresses.
+ * They must be translated to physical addresses using the chunk map before
+ * we can read them from disk.
  */
 
 /* Maximum number of chunks we track */
 #define MAX_CHUNKS 65536
 
 struct chunk_info {
+  uint64_t logical;    /* logical offset in btrfs address space */
   uint64_t physical;   /* physical offset on this device */
   uint64_t length;     /* length of the chunk */
   uint64_t type;       /* chunk type flags */
@@ -157,13 +147,16 @@ struct chunk_info {
 static unsigned int chunk_count = 0;
 static struct chunk_info chunks[MAX_CHUNKS];
 
-static void add_chunk(const uint64_t physical, const uint64_t length, const uint64_t type)
+static void add_chunk(const uint64_t logical, const uint64_t physical,
+    const uint64_t length, const uint64_t type)
 {
   if(chunk_count >= MAX_CHUNKS)
   {
-    log_warning("btrfs_remove_used_space: too many chunks (>%u), some allocated space may not be excluded\n", MAX_CHUNKS);
+    log_warning("btrfs: too many chunks (>%u), some allocated space may not be excluded\n",
+        MAX_CHUNKS);
     return;
   }
+  chunks[chunk_count].logical = logical;
   chunks[chunk_count].physical = physical;
   chunks[chunk_count].length = length;
   chunks[chunk_count].type = type;
@@ -171,8 +164,30 @@ static void add_chunk(const uint64_t physical, const uint64_t length, const uint
 }
 
 /*
+ * Translate a btrfs logical address to a physical device address.
+ * Uses the chunk map built from sys_chunk_array and chunk tree.
+ * Returns 1 on success (physical_addr is set), 0 if no mapping found.
+ */
+static int logical_to_physical(const uint64_t logical_addr, uint64_t *physical_addr)
+{
+  unsigned int i;
+  for(i = 0; i < chunk_count; i++)
+  {
+    if(logical_addr >= chunks[i].logical &&
+       logical_addr < chunks[i].logical + chunks[i].length)
+    {
+      *physical_addr = chunks[i].physical + (logical_addr - chunks[i].logical);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/*
  * Parse the sys_chunk_array embedded in the superblock.
- * This gives us the system chunks (needed to bootstrap reading the chunk tree).
+ * This gives us the system chunks needed to bootstrap reading the chunk tree.
+ * Without these mappings, we cannot translate chunk_root's logical address
+ * to a physical disk offset.
  */
 static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
 {
@@ -180,7 +195,7 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
   const uint32_t array_size = le32(sb->sys_chunk_array_size);
   uint32_t offset = 0;
 
-  log_trace("btrfs: parsing sys_chunk_array, size=%u\n", array_size);
+  log_info("btrfs: parsing sys_chunk_array, size=%u bytes\n", array_size);
 
   while(offset < array_size)
   {
@@ -188,6 +203,7 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
     const struct btrfs_chunk *chunk;
     uint16_t num_stripes;
     uint16_t i;
+    uint64_t logical;
 
     if(offset + sizeof(struct btrfs_disk_key) > array_size)
       break;
@@ -197,7 +213,8 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
 
     if(key->type != BTRFS_CHUNK_ITEM_KEY)
     {
-      log_warning("btrfs: unexpected key type %u in sys_chunk_array\n", key->type);
+      log_warning("btrfs: unexpected key type %u in sys_chunk_array at offset %u\n",
+          key->type, offset);
       break;
     }
 
@@ -206,18 +223,29 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
 
     chunk = (const struct btrfs_chunk *)(array + offset);
     num_stripes = le16(chunk->num_stripes);
+    logical = le64(key->offset);
 
-    log_trace("btrfs: sys_chunk logical=%llu length=%llu type=0x%llx stripes=%u\n",
-        (unsigned long long)le64(key->offset),
-        (unsigned long long)le64(chunk->length),
-        (unsigned long long)le64(chunk->type),
-        num_stripes);
+    {
+      const char *type_str = "UNKNOWN";
+      const uint64_t ctype = le64(chunk->type);
+      if(ctype & BTRFS_BLOCK_GROUP_SYSTEM)   type_str = "SYSTEM";
+      if(ctype & BTRFS_BLOCK_GROUP_METADATA) type_str = "METADATA";
+      if(ctype & BTRFS_BLOCK_GROUP_DATA)     type_str = "DATA";
+      log_info("btrfs: sys_chunk: logical=0x%llx length=%llu (%llu MiB) type=%s stripes=%u\n",
+          (unsigned long long)logical,
+          (unsigned long long)le64(chunk->length),
+          (unsigned long long)(le64(chunk->length) / (1024*1024)),
+          type_str, num_stripes);
+    }
 
     /* Add each stripe's physical location */
     if(num_stripes > 0)
     {
-      /* First stripe is embedded in the chunk struct */
-      add_chunk(le64(chunk->stripe.offset), le64(chunk->length), le64(chunk->type));
+      log_info("btrfs:   stripe[0]: physical=0x%llx devid=%llu\n",
+          (unsigned long long)le64(chunk->stripe.offset),
+          (unsigned long long)le64(chunk->stripe.devid));
+      add_chunk(logical, le64(chunk->stripe.offset),
+          le64(chunk->length), le64(chunk->type));
 
       /* Additional stripes follow the chunk struct */
       for(i = 1; i < num_stripes; i++)
@@ -228,7 +256,12 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
         if(stripe_offset + sizeof(struct btrfs_stripe) > array_size)
           break;
         extra_stripe = (const struct btrfs_stripe *)(array + stripe_offset);
-        add_chunk(le64(extra_stripe->offset), le64(chunk->length), le64(chunk->type));
+        log_info("btrfs:   stripe[%u]: physical=0x%llx devid=%llu\n",
+            i,
+            (unsigned long long)le64(extra_stripe->offset),
+            (unsigned long long)le64(extra_stripe->devid));
+        add_chunk(logical, le64(extra_stripe->offset),
+            le64(chunk->length), le64(chunk->type));
       }
     }
 
@@ -240,7 +273,7 @@ static void parse_sys_chunk_array(const struct btrfs_super_block *sb)
 
 /*
  * Parse a single leaf node of the chunk tree.
- * Extract all CHUNK_ITEM entries and add their physical stripes.
+ * Extract all CHUNK_ITEM entries and add their physical stripes to the map.
  */
 static void parse_chunk_tree_leaf(
     const unsigned char *leaf_buf, const uint32_t nodesize)
@@ -251,6 +284,8 @@ static void parse_chunk_tree_leaf(
 
   if(header->level != 0)
     return;  /* Not a leaf */
+
+  log_trace("btrfs: parsing chunk tree leaf with %u items\n", nritems);
 
   for(i = 0; i < nritems; i++)
   {
@@ -270,15 +305,17 @@ static void parse_chunk_tree_leaf(
       const struct btrfs_chunk *chunk;
       uint16_t num_stripes;
       uint16_t s;
+      uint64_t logical;
 
       if(data_offset + sizeof(struct btrfs_chunk) > nodesize)
         continue;
 
       chunk = (const struct btrfs_chunk *)(leaf_buf + data_offset);
       num_stripes = le16(chunk->num_stripes);
+      logical = le64(item->key.offset);
 
-      log_trace("btrfs: chunk logical=%llu length=%llu type=0x%llx stripes=%u\n",
-          (unsigned long long)le64(item->key.offset),
+      log_trace("btrfs: chunk: logical=0x%llx length=%llu type=0x%llx stripes=%u\n",
+          (unsigned long long)logical,
           (unsigned long long)le64(chunk->length),
           (unsigned long long)le64(chunk->type),
           num_stripes);
@@ -286,7 +323,8 @@ static void parse_chunk_tree_leaf(
       /* First stripe */
       if(num_stripes > 0)
       {
-        add_chunk(le64(chunk->stripe.offset), le64(chunk->length), le64(chunk->type));
+        add_chunk(logical, le64(chunk->stripe.offset),
+            le64(chunk->length), le64(chunk->type));
       }
 
       /* Additional stripes */
@@ -300,7 +338,8 @@ static void parse_chunk_tree_leaf(
           break;
 
         extra = (const struct btrfs_stripe *)(leaf_buf + stripe_off);
-        add_chunk(le64(extra->offset), le64(chunk->length), le64(chunk->type));
+        add_chunk(logical, le64(extra->offset),
+            le64(chunk->length), le64(chunk->type));
       }
     }
   }
@@ -310,6 +349,9 @@ static void parse_chunk_tree_leaf(
  * Recursively walk the chunk tree from a given node.
  * - If level==0 (leaf): parse chunk items
  * - If level>0 (internal): read child nodes and recurse
+ *
+ * IMPORTANT: node_bytenr is a LOGICAL address. We must translate it
+ * to physical using the chunk map before reading from disk.
  * max_depth prevents runaway recursion on corrupt trees.
  */
 static void walk_chunk_tree(disk_t *disk, const partition_t *partition,
@@ -317,21 +359,35 @@ static void walk_chunk_tree(disk_t *disk, const partition_t *partition,
 {
   unsigned char *buf;
   const struct btrfs_header *header;
+  uint64_t physical_addr;
 
   if(max_depth <= 0)
+  {
+    log_warning("btrfs: chunk tree walk exceeded max depth\n");
     return;
+  }
+
+  /* Translate logical address to physical using chunk map */
+  if(!logical_to_physical(node_bytenr, &physical_addr))
+  {
+    log_warning("btrfs: cannot translate chunk tree node logical addr 0x%llx to physical "
+        "(have %u chunk mappings)\n",
+        (unsigned long long)node_bytenr, chunk_count);
+    return;
+  }
+
+  log_trace("btrfs: reading chunk tree node: logical=0x%llx -> physical=0x%llx\n",
+      (unsigned long long)node_bytenr, (unsigned long long)physical_addr);
 
   buf = (unsigned char *)MALLOC(nodesize);
   if(buf == NULL)
     return;
 
-  /* Read the node from disk.
-   * For single-device btrfs, logical == physical on the device.
-   * The node_bytenr is relative to the start of the btrfs filesystem,
-   * so we add the partition offset. */
-  if(disk->pread(disk, buf, nodesize, partition->part_offset + node_bytenr) != (int)nodesize)
+  if(disk->pread(disk, buf, nodesize,
+        partition->part_offset + physical_addr) != (int)nodesize)
   {
-    log_warning("btrfs: failed to read chunk tree node at offset %llu\n",
+    log_warning("btrfs: failed to read chunk tree node at physical 0x%llx (logical 0x%llx)\n",
+        (unsigned long long)physical_addr,
         (unsigned long long)node_bytenr);
     free(buf);
     return;
@@ -339,17 +395,14 @@ static void walk_chunk_tree(disk_t *disk, const partition_t *partition,
 
   header = (const struct btrfs_header *)buf;
 
-  /* Validate: check that the header's bytenr matches where we read it */
-  if(le64(header->bytenr) != partition->part_offset + node_bytenr &&
-     le64(header->bytenr) != node_bytenr)
+  /* Validate: header->bytenr should be the logical address of this node */
+  if(le64(header->bytenr) != node_bytenr)
   {
-    /* On single-device, bytenr in the header is the logical address.
-     * For single device, logical addr == physical addr relative to
-     * device start. So header->bytenr should equal node_bytenr. */
-    log_warning("btrfs: chunk tree node bytenr mismatch: expected %llu, got %llu\n",
+    log_warning("btrfs: chunk tree node bytenr mismatch: expected logical 0x%llx, "
+        "header says 0x%llx\n",
         (unsigned long long)node_bytenr,
         (unsigned long long)le64(header->bytenr));
-    /* Try to continue anyway - the data might still be valid */
+    /* Continue anyway - might still have valid data */
   }
 
   if(header->level == 0)
@@ -362,6 +415,9 @@ static void walk_chunk_tree(disk_t *disk, const partition_t *partition,
     /* Internal node: follow child pointers */
     const uint32_t nritems = le32(header->nritems);
     uint32_t i;
+
+    log_trace("btrfs: chunk tree internal node level=%u items=%u\n",
+        header->level, nritems);
 
     for(i = 0; i < nritems; i++)
     {
@@ -380,7 +436,8 @@ static void walk_chunk_tree(disk_t *disk, const partition_t *partition,
   free(buf);
 }
 
-unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition, alloc_data_t *list_search_space)
+unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition,
+    alloc_data_t *list_search_space)
 {
   struct btrfs_super_block *sb;
   unsigned char *sb_buf;
@@ -389,8 +446,9 @@ unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition,
   uint64_t chunk_root;
   unsigned int i;
   uint64_t total_excluded = 0;
-  uint64_t start_free = 0;
-  uint64_t end_free = 0;
+  unsigned int data_chunks = 0;
+  unsigned int meta_chunks = 0;
+  unsigned int sys_chunks = 0;
 
   /* Reset chunk tracking */
   chunk_count = 0;
@@ -430,23 +488,43 @@ unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition,
     return 0;
   }
 
-  log_info("btrfs_remove_used_space: sectorsize=%u nodesize=%u chunk_root=%llu\n",
-      sectorsize, nodesize, (unsigned long long)chunk_root);
-  log_info("btrfs_remove_used_space: total_bytes=%llu bytes_used=%llu\n",
+  log_info("btrfs_remove_used_space: sectorsize=%u nodesize=%u\n", sectorsize, nodesize);
+  log_info("btrfs_remove_used_space: chunk_root logical=0x%llx\n",
+      (unsigned long long)chunk_root);
+  log_info("btrfs_remove_used_space: total_bytes=%llu (%llu GiB)\n",
       (unsigned long long)le64(sb->total_bytes),
-      (unsigned long long)le64(sb->bytes_used));
+      (unsigned long long)(le64(sb->total_bytes) / (1024ULL*1024*1024)));
+  log_info("btrfs_remove_used_space: bytes_used=%llu (%llu GiB)\n",
+      (unsigned long long)le64(sb->bytes_used),
+      (unsigned long long)(le64(sb->bytes_used) / (1024ULL*1024*1024)));
 
-  /* Step 1: Parse sys_chunk_array from superblock for bootstrap chunks */
+  /* Step 1: Parse sys_chunk_array from superblock for bootstrap chunk mappings.
+   * This provides the logical->physical mapping for system chunks,
+   * which is required to locate the chunk tree root on disk. */
   parse_sys_chunk_array(sb);
 
-  log_info("btrfs_remove_used_space: %u chunks from sys_chunk_array\n", chunk_count);
+  log_info("btrfs_remove_used_space: %u chunk mappings from sys_chunk_array\n", chunk_count);
 
   /* Step 2: Walk the chunk tree to discover all chunk mappings.
-   * The chunk_root logical address should be resolvable via sys_chunk_array
-   * (system chunks). For single-device btrfs, logical == physical. */
+   * The chunk_root is a LOGICAL address - we use the sys_chunk_array
+   * mappings to translate it to a physical address for reading. */
+  {
+    uint64_t chunk_root_phys;
+    if(!logical_to_physical(chunk_root, &chunk_root_phys))
+    {
+      log_error("btrfs_remove_used_space: cannot translate chunk_root logical 0x%llx "
+          "to physical (sys_chunk_array may be incomplete)\n",
+          (unsigned long long)chunk_root);
+      free(sb_buf);
+      return 0;
+    }
+    log_info("btrfs_remove_used_space: chunk_root physical=0x%llx\n",
+        (unsigned long long)chunk_root_phys);
+  }
+
   walk_chunk_tree(disk, partition, chunk_root, nodesize, 8);
 
-  log_info("btrfs_remove_used_space: %u total chunks discovered\n", chunk_count);
+  log_info("btrfs_remove_used_space: %u total chunk mappings discovered\n", chunk_count);
 
   if(chunk_count == 0)
   {
@@ -455,8 +533,21 @@ unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition,
     return 0;
   }
 
+  /* Categorize chunks */
+  for(i = 0; i < chunk_count; i++)
+  {
+    if(chunks[i].type & BTRFS_BLOCK_GROUP_DATA)     data_chunks++;
+    if(chunks[i].type & BTRFS_BLOCK_GROUP_METADATA) meta_chunks++;
+    if(chunks[i].type & BTRFS_BLOCK_GROUP_SYSTEM)   sys_chunks++;
+  }
+  log_info("btrfs_remove_used_space: chunk types: %u DATA, %u METADATA, %u SYSTEM\n",
+      data_chunks, meta_chunks, sys_chunks);
+
   /* Step 3: Remove allocated chunk ranges from search space.
-   * Use the same batching approach as ext2_remove_used_space() for efficiency. */
+   * We exclude ALL chunk types (data, metadata, system) because:
+   * - Metadata/system chunks contain no user file data
+   * - Data chunks contain currently-allocated file extents
+   * The unallocated device space (not in any chunk) is where we scan. */
   for(i = 0; i < chunk_count; i++)
   {
     const uint64_t chunk_start = partition->part_offset + chunks[i].physical;
@@ -465,40 +556,28 @@ unsigned int btrfs_remove_used_space(disk_t *disk, const partition_t *partition,
     /* Ensure we don't go past partition boundaries */
     if(chunks[i].physical + chunks[i].length > partition->part_size)
     {
-      log_warning("btrfs: chunk at physical %llu + %llu exceeds partition size %llu, skipping\n",
+      log_warning("btrfs: chunk physical 0x%llx + 0x%llx exceeds partition size 0x%llx, clamping\n",
           (unsigned long long)chunks[i].physical,
           (unsigned long long)chunks[i].length,
           (unsigned long long)partition->part_size);
       continue;
     }
 
-    /* Batch contiguous ranges for efficiency */
-    if(end_free + 1 == chunk_start)
-    {
-      end_free = chunk_end;
-    }
-    else
-    {
-      if(start_free != end_free && start_free != 0)
-      {
-        del_search_space(list_search_space, start_free, end_free);
-        total_excluded += end_free - start_free + 1;
-      }
-      start_free = chunk_start;
-      end_free = chunk_end;
-    }
+    log_trace("btrfs: excluding physical range 0x%llx - 0x%llx (%llu MiB, type=0x%llx)\n",
+        (unsigned long long)chunk_start,
+        (unsigned long long)chunk_end,
+        (unsigned long long)(chunks[i].length / (1024*1024)),
+        (unsigned long long)chunks[i].type);
+
+    del_search_space(list_search_space, chunk_start, chunk_end);
+    total_excluded += chunks[i].length;
   }
 
-  /* Flush last batch */
-  if(start_free != end_free && start_free != 0)
-  {
-    del_search_space(list_search_space, start_free, end_free);
-    total_excluded += end_free - start_free + 1;
-  }
-
-  log_info("btrfs_remove_used_space: excluded %llu bytes (%llu MB) of allocated space\n",
+  log_info("btrfs_remove_used_space: excluded %llu bytes (%llu GiB) of allocated chunk space\n",
       (unsigned long long)total_excluded,
-      (unsigned long long)(total_excluded / (1024 * 1024)));
+      (unsigned long long)(total_excluded / (1024ULL*1024*1024)));
+  log_info("btrfs_remove_used_space: remaining search space ≈ %llu GiB\n",
+      (unsigned long long)((partition->part_size - total_excluded) / (1024ULL*1024*1024)));
 
   /* Also exclude the superblock mirror locations */
   {
