@@ -61,6 +61,7 @@
 #include "photorec.h"
 #include "exfatp.h"
 #include "ext2p.h"
+#include "btrfsp.h"
 #include "fatp.h"
 #include "ntfsp.h"
 #include "log.h"
@@ -415,6 +416,8 @@ unsigned int remove_used_space(disk_t *disk_car, const partition_t *partition, a
   else if(partition->upart_type==UP_EXT2 || partition->upart_type==UP_EXT3 || partition->upart_type==UP_EXT4)
     return ext2_remove_used_space(disk_car, partition, list_search_space);
 #endif
+  else if(partition->upart_type==UP_BTRFS)
+    return btrfs_remove_used_space(disk_car, partition, list_search_space);
 #endif
   return 0;
 }
