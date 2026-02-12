@@ -2134,7 +2134,7 @@ file_enable_t array_file_enable[]=
   { .enable=0, .file_hint=&file_hint_zcode  },
 #endif
 #if !defined(SINGLE_FORMAT) || defined(SINGLE_FORMAT_zip)
-  { .enable=0, .file_hint=&file_hint_zip  },
+  { .enable=1, .file_hint=&file_hint_zip  },
 #endif
 #if !defined(SINGLE_FORMAT) || defined(SINGLE_FORMAT_zpr)
   { .enable=0, .file_hint=&file_hint_zpr  },
