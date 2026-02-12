@@ -65,6 +65,7 @@
 #include "chgarchn.h"
 #include "autoset.h"
 #include "json_log.h"
+#include "phjob.h"
 
 #if defined(HAVE_NCURSES)
 #define NBR_DISK_MAX 		(LINES-6-8)
@@ -257,7 +258,7 @@ int do_curses_photorec(struct ph_param *params, struct ph_options *options, cons
     session_load(&saved_device, &saved_cmd,&list_search_space);
     if(saved_device!=NULL && saved_cmd!=NULL && !td_list_empty(&list_search_space.list)
 #if defined(HAVE_NCURSES)
-	&& ( resume_session!=0 || ask_confirmation("Continue previous session ? (Y/N)")!=0)
+	&& ( resume_session!=0 || photorec_batch_mode!=0 || ask_confirmation("Continue previous session ? (Y/N)")!=0)
 #endif
       )
     {

@@ -85,6 +85,7 @@
 #include "dfxml.h"
 #include "poptions.h"
 #include "psearchn.h"
+#include "phjob.h"
 
 /* #define DEBUG */
 /* #define DEBUG_BF */
@@ -276,7 +277,7 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
   else
   {
 #ifdef HAVE_NCURSES
-    if(options->expert>0 &&
+    if(options->expert>0 && photorec_batch_mode==0 &&
 	ask_confirmation("Try to unformat a FAT filesystem (Y/N)")!=0)
       params->status=STATUS_UNFORMAT;
 #endif
@@ -379,6 +380,12 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
 	  res=strrchr(dst_directory, '/');
 	  if(res!=NULL)
 	    *res='\0';
+          if(photorec_batch_mode!=0)
+          {
+            log_critical("No space left, quitting (batch mode)\n");
+            params->status=STATUS_QUIT;
+          }
+          else
 	  ask_location(dst_directory, sizeof(dst_directory), "Warning: not enough free space available. Please select a destination to save the recovered files to.\nDo not choose to write the files to the same partition they were stored on.", "");
 	  if(dst_directory[0]=='\0')
 	    params->status=STATUS_QUIT;
@@ -407,7 +414,7 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
 	{
 	  /* Failed to save the session! */
 #ifdef HAVE_NCURSES
-	  if(ask_confirmation("PhotoRec has been unable to save its session status. Answer Y to really Quit, N to resume the recovery")!=0)
+	  if(photorec_batch_mode!=0 || ask_confirmation("PhotoRec has been unable to save its session status. Answer Y to really Quit, N to resume the recovery")!=0)
 #endif
 	    params->status=STATUS_QUIT;
 	}
@@ -415,7 +422,7 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
 	{
 	  log_flush();
 #ifdef HAVE_NCURSES
-	  if(need_to_stop!=0 || ask_confirmation("Answer Y to really Quit, N to resume the recovery")!=0)
+	  if(need_to_stop!=0 || photorec_batch_mode!=0 || ask_confirmation("Answer Y to really Quit, N to resume the recovery")!=0)
 #endif
 	    params->status=STATUS_QUIT;
 	}
@@ -445,7 +452,7 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
 #endif
   }
 #ifdef HAVE_NCURSES
-  if(options->expert>0 && !td_list_empty(&list_search_space->list))
+  if(options->expert>0 && photorec_batch_mode==0 && !td_list_empty(&list_search_space->list))
   {
     char msg[256];
     uint64_t data_size=0;
@@ -487,7 +494,7 @@ int photorec(struct ph_param *params, const struct ph_options *options, alloc_da
   /* Free memory */
   free_search_space(list_search_space);
 #ifdef HAVE_NCURSES
-  if(params->cmd_run==NULL)
+  if(params->cmd_run==NULL && photorec_batch_mode==0)
     recovery_finished(params->disk, params->partition, params->file_nbr, params->recup_dir, ind_stop);
 #endif
   json_log_completion(params, "PhotoRec completed recovery");

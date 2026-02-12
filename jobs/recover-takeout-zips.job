@@ -1,0 +1,52 @@
+# PhotoRec Job Profile — Recover Google Takeout ZIPs from btrfs LVM
+#
+# Usage:  photorec /log /job /path/to/this/file.job
+#
+# This runs a fully non-interactive recovery scan.
+# All interactive prompts are automatically suppressed.
+
+[device]
+# Device or image file to scan
+path = /dev/mapper/system-root
+
+[scan]
+# Scan mode: "freespace" (only unallocated space) or "wholespace" (everything)
+mode = freespace
+
+# Partition table type: None | Intel | EFI GPT | Mac | Sun
+# "None" = treat as whole disk/volume (required for LVM logical volumes)
+partition_type = None
+
+# Block size in bytes, 0 = auto-detect from filesystem
+blocksize = 0
+
+[filetypes]
+# Set default state for all file types, then override individually
+default = disable
+
+# Enable only the types you want to recover
+zip = enable
+# tar = enable
+# gz  = enable
+# rar = enable
+# jpg = enable
+# doc = enable
+# pdf = enable
+
+[options]
+# Paranoid mode: 0=no check, 1=validate recovered files, 2=brute-force
+paranoid = 1
+
+# Keep corrupted files: 0=discard, 1=keep
+keep_corrupted_file = 0
+
+# Expert mode: 0=normal, 1=expert (extra prompts — avoid in batch mode)
+expert = 0
+
+# Low memory mode: 0=normal, 1=reduce memory usage
+lowmem = 0
+
+[output]
+# Recovery destination directory.
+# PhotoRec will create subdirectories recup_dir.1, recup_dir.2, etc.
+directory = /run/media/stephane/babba1d2-aea8-4876-ba6c-d47aa6de90d1/photorec-recovery.7

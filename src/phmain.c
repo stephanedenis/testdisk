@@ -90,6 +90,7 @@
 #include "pdiskseln.h"
 #include "dfxml.h"
 #include "json_log.h"
+#include "phjob.h"
 
 int need_to_stop=0;
 extern file_enable_t array_file_enable[];
@@ -125,11 +126,13 @@ static void sighup_hdlr(int sig)
 static void display_help(void)
 {
   printf("\nUsage: photorec [/log] [/logjson log.jsonl] [/debug] [/d recup_dir] [file.dd|file.e01|device]\n"\
+      "       photorec /job <config.job> [/log] [/debug]\n" \
       "       photorec /version\n" \
       "\n" \
       "/log            : create a photorec.log file\n" \
       "/logjson <file> : create a log in JSON format\n" \
       "/debug          : add debug information\n" \
+      "/job <file>     : run non-interactive job from config file\n" \
       "\n" \
       "PhotoRec searches for various file formats (JPEG, Office...). It stores files\n" \
       "in the recup_dir directory.\n");
@@ -309,6 +312,33 @@ int main( int argc, char **argv )
       run_setlocale=0;
     else
 #endif
+    if((strcmp(argv[i],"/job")==0) || (strcmp(argv[i],"-job")==0) || (strcmp(argv[i],"--job")==0))
+    {
+      if(i+1>=argc)
+      {
+        display_help();
+        free(params.recup_dir);
+        return 1;
+      }
+      {
+        disk_t *disk_car;
+        if(photorec_load_job(argv[++i], &params, &options) != 0)
+        {
+          free(params.recup_dir);
+          return 1;
+        }
+        /* Open the device specified in the job file */
+        disk_car=file_test_availability(params.cmd_device, options.verbose, testdisk_mode);
+        if(disk_car==NULL)
+        {
+          printf("\nUnable to open device %s (from job file): %s\n", params.cmd_device, strerror(errno));
+          free(params.recup_dir);
+          return 1;
+        }
+        list_disk=insert_new_disk(list_disk,disk_car);
+      }
+    }
+    else
     if(strcmp(argv[i],"/cmd")==0)
     {
       if(i+2>=argc)

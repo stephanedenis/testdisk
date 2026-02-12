@@ -1,0 +1,18 @@
+# Test job profile — small test
+[device]
+path = /dev/mapper/system-root
+
+[scan]
+mode = freespace
+partition_type = None
+
+[filetypes]
+default = disable
+zip = enable
+
+[options]
+paranoid = 1
+keep_corrupted_file = 0
+
+[output]
+directory = /tmp/photorec-job-test
