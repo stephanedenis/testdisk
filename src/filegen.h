@@ -33,7 +33,7 @@ extern "C" {
 #if defined(DJGPP)
 #define PHOTOREC_MAX_FILE_SIZE (((uint64_t)1<<31)-1)
 #else
-#define PHOTOREC_MAX_FILE_SIZE (((uint64_t)1<<41)-1)
+#define PHOTOREC_MAX_FILE_SIZE (((uint64_t)1<<32)-1)  /* ~4GB limit to prevent bloated files */
 #endif
 #define PHOTOREC_MAX_SIZE_16 (((uint64_t)1<<15)-1)
 #define PHOTOREC_MAX_SIZE_32 (((uint64_t)1<<31)-1)
