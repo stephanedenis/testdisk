@@ -51,7 +51,7 @@ static void register_header_check_pdf(file_stat_t *file_stat);
 const file_hint_t file_hint_pdf= {
   .extension="pdf",
   .description="Portable Document Format, Adobe Illustrator",
-  .max_filesize=PHOTOREC_MAX_FILE_SIZE,
+  .max_filesize=(uint64_t)2*1024*1024*1024  /* 2GB max for PDF */,
   .recover=1,
   .enable_by_default=1,
   .register_header_check=&register_header_check_pdf
